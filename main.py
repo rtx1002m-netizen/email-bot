@@ -4,7 +4,9 @@ import aiohttp
 import json
 import os
 import re
+import threading
 from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -108,23 +110,23 @@ async def refresh_token(address, password):
             return data["token"]
 
 def main_keyboard(emails):
-    buttons = [[InlineKeyboardButton("➕ إضافة إيميل جديد", callback_data="add_email")]]
+    buttons = [[InlineKeyboardButton("+ اضافة ايميل جديد", callback_data="add_email")]]
     if emails:
         for i, em in enumerate(emails):
             buttons.append([
-                InlineKeyboardButton(f"📬 {em['address']}", callback_data=f"view_inbox_{i}"),
-                InlineKeyboardButton("🗑️", callback_data=f"delete_email_{i}")
+                InlineKeyboardButton(f"inbox {em['address']}", callback_data=f"view_inbox_{i}"),
+                InlineKeyboardButton("حذف", callback_data=f"delete_email_{i}")
             ])
-    buttons.append([InlineKeyboardButton("🚪 تسجيل الخروج", callback_data="logout")])
+    buttons.append([InlineKeyboardButton("تسجيل الخروج", callback_data="logout")])
     return InlineKeyboardMarkup(buttons)
 
 async def show_dashboard(update, context, user):
-    text = f"👤 مرحباً *{user['username']}*!\n\n📧 إيميلاتك: *{len(user.get('emails', []))}*\n\nاختر ما تريد:"
+    text = f"مرحبا {user['username']}\n\nايميلاتك: {len(user.get('emails', []))}\n\naختر ما تريد:"
     kb = main_keyboard(user.get("emails", []))
     if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+        await update.callback_query.edit_message_text(text, reply_markup=kb)
     else:
-        await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+        await update.message.reply_text(text, reply_markup=kb)
 
 async def start(update, context):
     telegram_id = str(update.effective_user.id)
@@ -132,24 +134,24 @@ async def start(update, context):
     if user:
         await show_dashboard(update, context, user)
         return ConversationHandler.END
-    await update.message.reply_text("👋 أهلاً! أدخل اسم مستخدم:\n_(أحرف وأرقام فقط، 3 أحرف على الأقل)_", parse_mode="Markdown")
+    await update.message.reply_text("اهلا! ادخل اسم مستخدم (احرف وارقام فقط، 3 احرف على الاقل):")
     return WAITING_USERNAME
 
 async def receive_username(update, context):
     telegram_id = str(update.effective_user.id)
     username = update.message.text.strip().lower()
     if len(username) < 3:
-        await update.message.reply_text("❌ الاسم قصير! 3 أحرف على الأقل.")
+        await update.message.reply_text("الاسم قصير! 3 احرف على الاقل.")
         return WAITING_USERNAME
     if not username.isalnum():
-        await update.message.reply_text("❌ أحرف وأرقام فقط بدون رموز.")
+        await update.message.reply_text("احرف وارقام فقط بدون رموز.")
         return WAITING_USERNAME
     if username_taken(username, exclude_id=telegram_id):
-        await update.message.reply_text(f"❌ الاسم *{username}* مشغول! جرب اسماً آخر:", parse_mode="Markdown")
+        await update.message.reply_text(f"الاسم {username} مشغول! جرب اسما اخر:")
         return WAITING_USERNAME
     user = {"username": username, "telegram_id": telegram_id, "emails": [], "created_at": datetime.now().isoformat()}
     save_user(telegram_id, user)
-    await update.message.reply_text(f"✅ تم إنشاء حسابك!\n👤 *{username}*", parse_mode="Markdown")
+    await update.message.reply_text(f"تم انشاء حسابك! اسم المستخدم: {username}")
     await show_dashboard(update, context, user)
     return ConversationHandler.END
 
@@ -159,22 +161,22 @@ async def button_handler(update, context):
     telegram_id = str(update.effective_user.id)
     user = get_user(telegram_id)
     if not user:
-        await query.edit_message_text("❌ أرسل /start")
+        await query.edit_message_text("ارسل /start")
         return
     data = query.data
     if data == "add_email":
         if len(user.get("emails", [])) >= 5:
-            await query.answer("❌ الحد الأقصى 5 إيميلات!", show_alert=True)
+            await query.answer("الحد الاقصى 5 ايميلات!", show_alert=True)
             return
-        await query.edit_message_text("⏳ جاري إنشاء إيميل...")
+        await query.edit_message_text("جاري انشاء ايميل...")
         account = await create_mailtm_account()
         if not account:
-            await query.edit_message_text("❌ فشل الإنشاء، حاول مرة أخرى.")
+            await query.edit_message_text("فشل الانشاء، حاول مرة اخرى.")
             return
         account["messages_seen"] = []
         user.setdefault("emails", []).append(account)
         save_user(telegram_id, user)
-        await query.answer(f"✅ {account['address']}", show_alert=True)
+        await query.answer(f"تم: {account['address']}", show_alert=True)
         await show_dashboard(update, context, user)
     elif data.startswith("view_inbox_"):
         idx = int(data.split("_")[-1])
@@ -182,7 +184,7 @@ async def button_handler(update, context):
         if idx >= len(emails):
             return
         email = emails[idx]
-        await query.edit_message_text("⏳ جاري جلب الرسائل...")
+        await query.edit_message_text("جاري جلب الرسائل...")
         try:
             token = await refresh_token(email["address"], email["password"])
             if token:
@@ -192,15 +194,15 @@ async def button_handler(update, context):
             pass
         messages = await get_messages(email["token"])
         if not messages:
-            buttons = [[InlineKeyboardButton("🔙 رجوع", callback_data="back_dashboard")]]
-            await query.edit_message_text(f"📭 *{email['address']}*\n\nلا توجد رسائل.", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+            buttons = [[InlineKeyboardButton("رجوع", callback_data="back_dashboard")]]
+            await query.edit_message_text(f"{email['address']}\n\nلا توجد رسائل.", reply_markup=InlineKeyboardMarkup(buttons))
             return
         buttons = []
         for msg in messages[:10]:
             subject = msg.get("subject", "بدون موضوع")[:30]
-            buttons.append([InlineKeyboardButton(f"✉️ {subject}", callback_data=f"read_msg_{idx}_{msg['id']}")])
-        buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="back_dashboard")])
-        await query.edit_message_text(f"📬 *{email['address']}*\n📩 {len(messages)} رسالة:", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+            buttons.append([InlineKeyboardButton(subject, callback_data=f"read_msg_{idx}_{msg['id']}")])
+        buttons.append([InlineKeyboardButton("رجوع", callback_data="back_dashboard")])
+        await query.edit_message_text(f"{email['address']}\n{len(messages)} رسالة:", reply_markup=InlineKeyboardMarkup(buttons))
     elif data.startswith("read_msg_"):
         parts = data.split("_")
         idx = int(parts[2])
@@ -211,21 +213,21 @@ async def button_handler(update, context):
         email = emails[idx]
         msg = await get_message_content(email["token"], msg_id)
         if not msg:
-            await query.answer("❌ تعذر القراءة", show_alert=True)
+            await query.answer("تعذر القراءة", show_alert=True)
             return
         sender = msg.get("from", {}).get("address", "مجهول")
         subject = msg.get("subject", "بدون موضوع")
         body = re.sub(r'<[^>]+>', '', str(msg.get("text", msg.get("html", "لا يوجد محتوى"))))[:800]
-        text = f"✉️ *رسالة جديدة*\n\n📧 إلى: `{email['address']}`\n👤 من: `{sender}`\n📌 الموضوع: {subject}\n━━━━━━━━━━━━━━\n{body}"
-        buttons = [[InlineKeyboardButton("🔙 رجوع", callback_data=f"view_inbox_{idx}")]]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+        text = f"رسالة جديدة\n\nالى: {email['address']}\nمن: {sender}\nالموضوع: {subject}\n\n{body}"
+        buttons = [[InlineKeyboardButton("رجوع", callback_data=f"view_inbox_{idx}")]]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
     elif data.startswith("delete_email_"):
         idx = int(data.split("_")[-1])
         emails = user.get("emails", [])
         if idx >= len(emails):
             return
-        buttons = [[InlineKeyboardButton("✅ نعم احذف", callback_data=f"confirm_delete_{idx}"), InlineKeyboardButton("❌ لا", callback_data="back_dashboard")]]
-        await query.edit_message_text(f"⚠️ حذف:\n`{emails[idx]['address']}`؟", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+        buttons = [[InlineKeyboardButton("نعم احذف", callback_data=f"confirm_delete_{idx}"), InlineKeyboardButton("لا", callback_data="back_dashboard")]]
+        await query.edit_message_text(f"حذف: {emails[idx]['address']}?", reply_markup=InlineKeyboardMarkup(buttons))
     elif data.startswith("confirm_delete_"):
         idx = int(data.split("_")[-1])
         emails = user.get("emails", [])
@@ -237,11 +239,11 @@ async def button_handler(update, context):
             emails.pop(idx)
             user["emails"] = emails
             save_user(telegram_id, user)
-            await query.answer("✅ تم الحذف", show_alert=True)
+            await query.answer("تم الحذف", show_alert=True)
         await show_dashboard(update, context, user)
     elif data == "logout":
-        buttons = [[InlineKeyboardButton("✅ نعم اخرج", callback_data="confirm_logout"), InlineKeyboardButton("❌ لا", callback_data="back_dashboard")]]
-        await query.edit_message_text("⚠️ تسجيل الخروج سيحذف إيميلاتك.", reply_markup=InlineKeyboardMarkup(buttons))
+        buttons = [[InlineKeyboardButton("نعم اخرج", callback_data="confirm_logout"), InlineKeyboardButton("لا", callback_data="back_dashboard")]]
+        await query.edit_message_text("تسجيل الخروج سيحذف ايميلاتك.", reply_markup=InlineKeyboardMarkup(buttons))
     elif data == "confirm_logout":
         for email in user.get("emails", []):
             try:
@@ -249,7 +251,7 @@ async def button_handler(update, context):
             except:
                 pass
         delete_user(telegram_id)
-        await query.edit_message_text("👋 تم تسجيل خروجك!\n\nأرسل /start للعودة.")
+        await query.edit_message_text("تم تسجيل خروجك!\n\nارسل /start للعودة.")
     elif data == "back_dashboard":
         await show_dashboard(update, context, user)
 
@@ -268,30 +270,14 @@ async def check_new_messages(context):
                     if msg["id"] not in seen:
                         sender = msg.get("from", {}).get("address", "مجهول")
                         subject = msg.get("subject", "بدون موضوع")
-                        text = f"🔔 *رسالة جديدة!*\n\n📧 إلى: `{email['address']}`\n👤 من: `{sender}`\n📌 الموضوع: {subject}"
-                        buttons = [[InlineKeyboardButton("📖 قراءة", callback_data=f"read_msg_{i}_{msg['id']}")]]
-                        await context.bot.send_message(chat_id=int(telegram_id), text=text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+                        text = f"رسالة جديدة!\n\nالى: {email['address']}\nمن: {sender}\nالموضوع: {subject}"
+                        buttons = [[InlineKeyboardButton("قراءة", callback_data=f"read_msg_{i}_{msg['id']}")]]
+                        await context.bot.send_message(chat_id=int(telegram_id), text=text, reply_markup=InlineKeyboardMarkup(buttons))
                         seen.add(msg["id"])
                 db["users"][telegram_id]["emails"][i]["messages_seen"] = list(seen)
             except Exception as e:
                 logger.error(f"Error: {e}")
     save_db(db)
-
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-    conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={WAITING_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_username)]},
-        fallbacks=[CommandHandler("start", start)]
-    )
-    app.add_handler(conv)
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.job_queue.run_repeating(check_new_messages, interval=15, first=10)
-    print("✅ البوت يعمل الآن...")
-    app.run_polling()
-
-if __import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
@@ -304,6 +290,19 @@ class Handler(BaseHTTPRequestHandler):
 def run_server():
     HTTPServer(("0.0.0.0", 10000), Handler).serve_forever()
 
-if __name__ == "__main__":
+def main():
     threading.Thread(target=run_server, daemon=True).start()
+    app = Application.builder().token(BOT_TOKEN).build()
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={WAITING_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_username)]},
+        fallbacks=[CommandHandler("start", start)]
+    )
+    app.add_handler(conv)
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.job_queue.run_repeating(check_new_messages, interval=15, first=10)
+    print("Bot is running...")
+    app.run_polling()
+
+if __name__ == "__main__":
     main()
